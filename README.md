@@ -17,6 +17,10 @@ with one click** or **retry a single task**.
   directory* (the stale failed record is removed first)
 - **单个重试**：每个失败任务旁有独立「重试」按钮
   Per-task retry button on every failed task
+- **保存目录可读化**：每行显示任务原始保存目录的完整路径（自动解析 cid），
+  重试时按该目录重新添加，文件会落回失败前的位置
+  Human-readable save directory on every row (cid auto-resolved to a full path);
+  retry always re-adds to that same directory
 - **复制全部链接**：需要手动处理时可一键复制所有失败任务的链接
   Copy-all-links for the few tasks that need manual handling
 - 扫描带时间预算 + 「继续扫描」，任务再多也不卡界面；进度条 + 中途停止
@@ -79,11 +83,16 @@ The script calls 115's web offline-download endpoints (documented from the commu
 | 任务列表 / Task list | `GET https://115.com/web/lixian/?ct=lixian&ac=task_lists&page=N` | 返回 `tasks[]`，含 `url`（原始链接）、`wp_path_id`（保存目录 cid）、`status`、`info_hash` 等 / returns the original link, save dir, status and hash per task |
 | 重新添加 / Re-add | `POST ...?ct=lixian&ac=add_task_url` | 表单字段 `url`、`wp_path_id`；`errcode=10008` 表示同任务已存在 / `errcode=10008` means a task with the same hash already exists |
 | 删除旧记录 / Delete | `POST ...?ct=lixian&ac=task_del` | 表单字段 `hash[0]`（`info_hash`） |
+| 目录名解析 / Resolve dir name | `GET https://webapi.115.com/files?cid=N` | 仅用于在面板里显示保存目录的完整路径 / display only |
 
 「重试」= 先删旧失败记录，再按原链接和原目录重新添加，等价于手动操作但可以批量。
+**重新添加时会带上任务的 `wp_path_id`（原保存目录 cid），所以文件一定落回失败前所在的目录**（目录被删等异常时面板会显示 cid 并报错）。
 
 "Retry" = delete the stale failed record, then re-add the same link to the same directory —
 the same as doing it by hand, but in batch.
+**The re-add request carries the task's `wp_path_id` (original save-directory cid), so the
+file lands back in exactly the directory it failed in** (if that directory no longer exists,
+the panel shows the cid and the task errors out visibly).
 
 ## 可调参数 / Configuration
 
@@ -175,6 +184,10 @@ else.
 | Task list | `GET https://115.com/web/lixian/?ct=lixian&ac=task_lists&page=N` | `tasks[]` with `url`, `wp_path_id`, `status`, `info_hash` |
 | Re-add | `POST ...?ct=lixian&ac=add_task_url` | fields `url`, `wp_path_id`; `errcode=10008` = task already exists |
 | Delete | `POST ...?ct=lixian&ac=task_del` | field `hash[0]` = `info_hash` |
+| Resolve dir name | `GET https://webapi.115.com/files?cid=N` | display only — shows the save directory's full path |
+
+Re-adding always passes the task's original `wp_path_id`, so retried files land back in the
+exact directory the failed task was saved to.
 
 ### Configuration
 

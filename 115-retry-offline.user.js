@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         115 云下载失败任务一键重试
 // @namespace    115.retry-offline
-// @version      1.1.1
+// @version      1.2.0
 // @description  115网盘 云下载（离线下载）失败任务：一键全部重试 / 单个重试。自动删除旧失败记录，按原链接 + 原保存目录重新添加
 // @author       local
 // @match        https://115.com/*
@@ -30,6 +30,8 @@
     list: (p) => `https://115.com/web/lixian/?ct=lixian&ac=task_lists&page=${p}`,
     add: "https://115.com/web/lixian/?ct=lixian&ac=add_task_url",
     del: "https://115.com/web/lixian/?ct=lixian&ac=task_del",
+    // 目录名解析（仅用于展示，重试用的是任务自带的 wp_path_id）
+    dir: (cid) => `https://webapi.115.com/files?cid=${encodeURIComponent(cid)}`,
   };
   /* ========================================================= */
 
@@ -109,6 +111,54 @@
 
   function errMsg(j) {
     return (j && (j.error_msg || j.err_msg)) || (j && j.errcode ? `errcode=${j.errcode}` : "未知错误");
+  }
+
+  /* ---------- 目录名解析：wp_path_id (cid) -> 可读路径 ---------- */
+  const dirPathCache = new Map(); // cid -> "/a/b/c" 或 "ERR:..."
+
+  async function resolveDirPath(cid) {
+    cid = String(cid || "").trim();
+    if (cid === "" || cid === "0") return "/"; // 根目录
+    if (dirPathCache.has(cid)) return dirPathCache.get(cid);
+
+    let result;
+    try {
+      const j = await apiGet(API.dir(cid));
+      // webapi files 返回 { path: [{cid,name},...], n: 当前目录名, ... }
+      let pathStr;
+      if (j && Array.isArray(j.path) && j.path.length) {
+        pathStr = j.path.map((p) => p && p.name).filter(Boolean).join("/");
+        if (pathStr) pathStr = "/" + pathStr;
+      } else if (j && j.n) {
+        pathStr = "/" + j.n;
+      }
+      if (!pathStr) throw new Error("无法解析目录路径");
+      result = pathStr;
+    } catch (e) {
+      result = "ERR:" + e.message;
+    }
+    dirPathCache.set(cid, result);
+    return result;
+  }
+
+  // 为一批任务解析目录名（并发 + 限流），返回 cid -> 路径
+  async function resolveDirsForTasks(taskList) {
+    const cids = [...new Set(taskList.map((t) => String(t.wp_path_id || "")).filter((c) => c && c !== "0"))].slice(0, 40);
+    const CONCURRENCY = 4;
+    for (let i = 0; i < cids.length; i += CONCURRENCY) {
+      const batch = cids.slice(i, i + CONCURRENCY);
+      await Promise.all(batch.map((c) => resolveDirPath(c)));
+    }
+  }
+
+  function dirLabel(cid) {
+    cid = String(cid || "").trim();
+    if (cid === "") return "默认目录（根）";
+    if (cid === "0") return "/（根目录）";
+    const p = dirPathCache.get(cid);
+    if (p === undefined) return `目录 cid: ${cid}（未解析）`;
+    if (p.startsWith("ERR:")) return `目录 cid: ${cid}（解析失败：${p.slice(4)}）`;
+    return p;
   }
 
   /* ---------- 扫描失败任务（可续扫、有重复页检测） ---------- */
@@ -412,7 +462,7 @@
       name.title = t.name || "";
       const url = el("div", "url", t.url || "（无链接）");
       url.title = t.url || "";
-      const meta = el("div", "meta", `失败任务 · 保存目录 cid: ${t.wp_path_id || "默认"} · 添加于 ${fmtTime(t.add_time) || "?"}`);
+      const meta = el("div", "meta", `失败任务 · 保存到 ${dirLabel(t.wp_path_id)} · 添加于 ${fmtTime(t.add_time) || "?"}`);
       info.append(name, url, meta);
 
       const btn = el("button", "btn mini", t.url ? "重试" : "无法重试");
@@ -433,7 +483,7 @@
         btn.disabled = true;
         try {
           const res = await retryOne(t);
-          setRow(row, res === "EXISTS" ? "skip" : "ok", res === "EXISTS" ? "任务已存在，无需重试" : "已重新添加，刷新页面查看");
+          setRow(row, res === "EXISTS" ? "skip" : "ok", res === "EXISTS" ? "任务已存在，无需重试" : `已重新添加到 ${dirLabel(t.wp_path_id)}，刷新 115 页面查看`);
         } catch (e) {
           setRow(row, "fail", e.message);
         }
@@ -469,6 +519,12 @@
     tasks = scan.tasks.slice().sort((a, b) => (b.add_time || 0) - (a.add_time || 0));
     renderRows();
     updateHead();
+    if (tasks.length) {
+      setStatusLine("正在解析保存目录名称…");
+      await resolveDirsForTasks(tasks);
+      renderRows();
+      updateHead();
+    }
     if (!busyLine.classList.contains("err")) setStatusLine("");
   }
 
@@ -483,6 +539,12 @@
     tasks = scan.tasks.slice().sort((a, b) => (b.add_time || 0) - (a.add_time || 0));
     renderRows();
     updateHead();
+    if (tasks.length) {
+      setStatusLine("正在解析保存目录名称…");
+      await resolveDirsForTasks(tasks);
+      renderRows();
+      updateHead();
+    }
     if (scan.done) setStatusLine("");
   }
 
@@ -509,7 +571,7 @@
             setRow(row, "skip", "任务已存在，无需重试");
             skip++;
           } else {
-            setRow(row, "ok", "已重新添加");
+            setRow(row, "ok", `已重新添加到 ${dirLabel(t.wp_path_id)}`);
             ok++;
           }
         } catch (e) {
